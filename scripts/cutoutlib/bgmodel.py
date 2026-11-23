@@ -43,7 +43,15 @@ def border_mask(shape: tuple[int, int], px: int = 24) -> np.ndarray:
 
 
 def sample(ps, shape: tuple[int, int], px: int = 24) -> dict:
-    """返回背景样本掩膜与统计（供报告引用）。"""
+    """返回背景样本掩膜与统计（供报告引用）。
+
+    三个来源：
+    - 被 P2 明确归为非 keep 的图层（水花/道具/背景物件）；
+    - 画面四周 24px 带（去掉主体邻域）；
+    - **图层拆分说"这里没有任何物体"的全部像素**（= 非 base 图层以外的全图）。
+      这一条是必需的：只靠边框带采不到被主体围在中间的背景物件（桌面、底座、平台），
+      它们的颜色不在调色板里，就会被当成"异色"，把主体围出的真实缝隙当成漏抠填上。
+    """
     keep = ps.p2 > 128
     for att in ps.attachments.values():
         keep |= att > 128
@@ -51,9 +59,14 @@ def sample(ps, shape: tuple[int, int], px: int = 24) -> dict:
     grow = imaging.dilate(keep, 2)
     from_layers = nonkeep & ~grow
     from_border = border_mask(shape, px) & ~imaging.dilate(keep, 4)
-    mask = from_layers | from_border
+    from_base = np.zeros(shape, bool)
+    fg = getattr(ps, "p2_foreground", None)
+    if fg is not None and fg.any():
+        from_base = ~imaging.dilate(fg >= 40, 4)
+    mask = from_layers | from_border | from_base
     return {"mask": mask, "from_layers": int(from_layers.sum()),
-            "from_border": int(from_border.sum()), "keep": int(keep.sum())}
+            "from_border": int(from_border.sum()), "from_base": int(from_base.sum()),
+            "keep": int(keep.sum())}
 
 
 def palette(lab: np.ndarray, mask: np.ndarray, k: int = 12, seed: int = 7) -> np.ndarray:
@@ -91,8 +104,13 @@ def distance(lab: np.ndarray, centers: np.ndarray) -> np.ndarray:
 
 
 def fill_holes_by_color(mask: np.ndarray, lab: np.ndarray, dist: np.ndarray,
-                        tol: float = HOLE_TOL, min_area: int = HOLE_MIN_AREA) -> tuple[np.ndarray, list]:
+                        tol: float = HOLE_TOL, min_area: int = HOLE_MIN_AREA,
+                        max_fill_px: int = 0) -> tuple[np.ndarray, list]:
     """填洞，但先看洞里的颜色像不像背景：像背景说明那是"围出来的真实缝隙"，不填。
+
+    max_fill_px：大到这个面积的洞一律不填。填洞只用来修分割在实心区域留下的小孔；
+    能装下另一个物体的洞是"看穿"的缝隙，里面可能还有别的背景物件（底座、支架、台面），
+    填上等于把那些物件贴到主体上（case-09 两腿之间的 4.7 万像素就是这样被填的）。
 
     返回 (填好洞的 mask, 决策记录)。
     """
@@ -110,6 +128,9 @@ def fill_holes_by_color(mask: np.ndarray, lab: np.ndarray, dist: np.ndarray,
             out |= comp
             log.append({"area": area, "median_dE": round(med, 2), "decision": "fill(small)"})
             continue
+        if max_fill_px and area > max_fill_px:
+            log.append({"area": area, "median_dE": round(med, 2), "decision": "keep-open(large-gap)"})
+            continue
         if med <= tol:
             log.append({"area": area, "median_dE": round(med, 2), "decision": "keep-open(background)"})
         else:
@@ -120,17 +141,23 @@ def fill_holes_by_color(mask: np.ndarray, lab: np.ndarray, dist: np.ndarray,
 
 def veto_background(alpha: np.ndarray, dist: np.ndarray, band_px: int = 2,
                     tol: float = VM_TOL, min_area: int = VETO_MIN_AREA,
-                    p90_tol: float = VETO_P90_TOL) -> tuple[np.ndarray, list]:
+                    p90_tol: float = VETO_P90_TOL,
+                    protect: np.ndarray | None = None) -> tuple[np.ndarray, list]:
     """把"颜色就是背景、又不在轮廓软边带里"的成片像素从 alpha 里剔掉。
 
     只吃成片的（≥min_area）、同质的（p90 ≤ p90_tol）区域：
     围巾高光、眼镜反光这类小面积近背景色不会被挖掉。
+
+    protect：图层拆分已经认作主体的像素。白墙前的白蕾丝、浅金发丝在 Lab 里与白墙几乎同色，
+    不允许只凭颜色把它冠掉 —— 漏进的背景本来就不在主体层里，这条不会放走它。
     """
     solid = alpha > 0.5
     if not solid.any():
         return alpha, []
     band = imaging.dilate(solid, band_px) & ~imaging.erode(solid, band_px)
     cand = solid & ~band & (dist <= tol)
+    if protect is not None:
+        cand &= ~protect
     if not cand.any():
         return alpha, []
     n, lab_idx, stats, _ = imaging.label(cand)

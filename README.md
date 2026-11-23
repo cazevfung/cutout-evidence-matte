@@ -1,7 +1,26 @@
 # cutout-evidence-matte
 
-证据驱动的抠图决策层：语义模型只提供候选 mask，最终像素只从原图取，边界 alpha 在本地按
-颜色线估算，过不了判据就报 `uncertain` 并写明缺的是哪一层。
+## 它解决什么，和生成式抠图有什么不同
+
+生成式模型交回来的是一张**重绘图**，不是原图的像素：边缘发脏、1px 细线在重绘里断掉、
+深浅两版素材对不上。这个工具只让模型投票「保留哪些东西」——谁在前、哪些该排除、哪些算细结构——
+像素永远从原图取，边界 alpha 在本地按颜色线估，所以 `pixel_fidelity` 恒为 0。判据过不了它不交
+一张「看着差不多」的图，而是报 `uncertain` 并写明缺的是哪一层（P1 / P2 / P3 / 几何 / alpha）。
+
+![demo 的输入与结果](docs/images/demo-before-after.png)
+
+同一张合成 demo：左边是进什么（原图 360×270，蓝渐变底 + 橙色人形 + 1px 白线 + 一团要排除的白水花），
+右边是出什么（真 alpha 贴棋盘底）——背景和水花没了，1px 白线还在，边缘不是二值硬切。
+
+## 真实一张图上的实测
+
+![真实案例：洋红 / 近白 / 棋盘底三联](docs/images/case08-proof.png)
+
+同一张**已经抠出的角色**贴到三种底上：脏边看洋红、半透明与飞边看近白、交付预览看棋盘。
+这张图上 `halo 17.301`、`coverage 0.9874`、`pixel_fidelity 0`，能判的都过了、`status=pass`
+（这张图没有细结构、也没有人工参照，`continuity` / `iou_ref` 不参与判定）。首跑记的是
+`halo 18.186`、`coverage 0.9888`，上面两个数是按当前规则重跑的，图与数字取自同一次运行。
+图里只有抠出的角色与纯色/棋盘底，原图场景与 UI、以及任何新素材都不进这个仓库。
 
 这是一个可独立运行的 Skill 包，也是它的 GitHub 仓库根目录。`SKILL.md` 是给 Agent 的使用说明；
 本文件说明怎么装、怎么验证、出问题看哪里。
@@ -33,7 +52,7 @@ SELFCHECK: PASS
 退出码 0 = demo 通过；1 = 跑通但判 `uncertain`（看 scorecard）；2 = 缺依赖、demo 缺件或
 判据与文档不一致。全程不发网络请求，也不需要任何 key。
 
-demo 是「一张原图 + 三份手写产物」：`demo/cache/demo-scene/auto/` 里的 `bria.png`（P1）、
+demo 就是上面第一张图：一张原图 + 三份手写产物。`demo/cache/demo-scene/auto/` 里的 `bria.png`（P1）、
 `key.png`（P3）、`layers/*.png`（P2）由 `scripts/make_demo.py` 用 numpy/OpenCV 直接画出，
 用来证明决策层不依赖某个采集服务，也不是回放件。重新生成：`python scripts/make_demo.py`。
 
@@ -65,13 +84,15 @@ python scripts/cutout_run.py run --case <case-dir> --cache-dir <cache-root> --ou
 
 产出 `out/<case>.rgba.png`、`.mask.png`、`.scorecard.json`、`.recipe.json`、`.proof.png`。
 `status=uncertain` 时看 `failures` 与 `blocked_layer`，按 `docs/thresholds.md` 的归因表动那一层。
+上面第二张图就是用这条命令跑出来的一份真产物（贴底合成后裁到角色）。
 
 ## 目录
 
 | 路径 | 内容 |
 | --- | --- |
 | `SKILL.md` | Agent 入口：方法、五条规则、采集契约、判据与失败模式 |
-| `docs/thresholds.md` | 12 条数值阈值 + p1_leak 规则、归因表、uncertain 口径 U1/U2/U3 |
+| `docs/thresholds.md` | 12 条数值阈值 + p1_leak 规则、规则参数、归因表、uncertain 口径 U1/U2/U3 |
+| `docs/images/` | 本文件那两张图：demo 前后对比、真实案例三联 |
 | `scripts/cutoutlib/` | 唯一实现：融合、几何先验、颜色线 matting、背景色模型、评分 |
 | `scripts/selfcheck.py` | 判据比对 + 离线 demo 一条命令自检 |
 | `scripts/cutout_run.py` | `check-cache` / `run` 两个子命令 |
@@ -94,6 +115,7 @@ python scripts/cutout_run.py run --case <case-dir> --cache-dir <cache-root> --ou
 | `unresolved_keep` | keep 项在原图定位不到 | 图里没有就改 keep；有但漏了按归因补提案 |
 | `status=uncertain` | 某条判据未过 | 看 `failures` / `blocked_layer`，按归因表改那一层，不要调阈值 |
 | 边缘糊、主体被重绘 | 把生成图当成了结果 | 最终像素必须来自原图，模型只给候选 mask |
+| 主体里的真实缝隙被填上 | 洞的判定把「看穿」当成「漏抠」 | 调 `hole_max_fill_frac`（见 `docs/thresholds.md` 的规则参数），不是调阈值 |
 
 ## 边界
 

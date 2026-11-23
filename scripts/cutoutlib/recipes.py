@@ -18,6 +18,8 @@ AUTO = {
     "p2_thr": 128,
     "p2_join_px": 3,
     "p2_min_area": 40,
+    "p2_authority": True,
+    "p2_authority_px": 4,
     "use_p3": False,
     "p3_join_px": 6,
     "p3_min_area": 200,
@@ -53,6 +55,7 @@ AUTO = {
     "hole_color_check": True,
     "hole_tol": 5.0,
     "hole_min_area": 200,
+    "hole_max_fill_frac": 0.001,
     "bg_veto": True,
     "bg_k": 12,
     "bg_veto_tol": 2.5,
@@ -64,6 +67,7 @@ AUTO = {
 
 SPACE = [
     ("auto", {}),
+    ("p1-skeleton", {"p2_authority": False}),
     ("no-thin", {"thin_on": False}),
     ("no-matte", {"matte_on": False}),
     ("tight-excl", {"exclusion_margin": 4}),

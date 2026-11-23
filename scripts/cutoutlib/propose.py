@@ -26,6 +26,7 @@ class ProposalSet:
     attachments: dict = field(default_factory=dict)  # 该保留的附属物（鱼等）
     labels: dict = field(default_factory=dict)
     p2_nonkeep: np.ndarray | None = None             # P2 明确归入"不是要保留的东西"的像素（背景/道具/雕塑）
+    p2_foreground: np.ndarray | None = None          # P2 全部非 base 图层（"这里是某个物体，不是背景"）
     p2_layers: list = field(default_factory=list)    # 每个图层的 kind，给评分卡溯源用
 
 
@@ -78,6 +79,7 @@ def build(case, prop: Proposals, use_p3: bool = True, src_rgb: np.ndarray | None
     shape = p1.shape
 
     p2 = np.zeros(shape, np.uint8)
+    foreground = np.zeros(shape, np.uint8)
     nonkeep = np.zeros(shape, bool)
     exclusions: dict[str, np.ndarray] = {}
     attachments: dict[str, np.ndarray] = {}
@@ -86,6 +88,7 @@ def build(case, prop: Proposals, use_p3: bool = True, src_rgb: np.ndarray | None
         if layer.name == "base":
             continue
         a = layer.alpha_on(shape)
+        foreground = np.maximum(foreground, a)
         kind = classify(layer.label or layer.name)
         labels[layer.name] = kind
         if kind in ("subject", "thin"):
@@ -127,7 +130,8 @@ def build(case, prop: Proposals, use_p3: bool = True, src_rgb: np.ndarray | None
         entry.setdefault("mask", entry["alpha"] if src_rgb is None else entry.get("color", entry["alpha"]))
     return ProposalSet(p1=p1, p2=p2, p3=p3, p3_error=p3_err,
                        exclusions=exclusions, attachments=attachments, labels=labels,
-                       p2_nonkeep=nonkeep, p2_layers=[{"name": k, "kind": v} for k, v in labels.items()])
+                       p2_nonkeep=nonkeep, p2_foreground=foreground,
+                       p2_layers=[{"name": k, "kind": v} for k, v in labels.items()])
 
 
 def _align_by_scale(key_fg: np.ndarray, ref: np.ndarray) -> tuple[np.ndarray, float]:
@@ -212,6 +216,22 @@ def fuse(ps: ProposalSet, params: dict) -> np.ndarray:
             if stats[i, cv2_CC_AREA] >= min_area:
                 keep |= lab == i
         core |= keep
+
+    # P2 主体层优先：P1（显著性）分不清"显眼的背景物件"和"主体"——显卡盒上的金属底座、
+    # 印在盒面上的亮色文字，都会被它算成主体。图层拆分把画面分成 base（背景）+ 若干物体层；
+    # 落在 base 里的 P1 像素就是背景，一律剔除；落在任何一个物体层里的（哪怕那层不是本次
+    # 要保留的东西）保留，因为"不要它"是排除区该管的事，不由这条规则决定。黑色过膝袜压在
+    # 黑色盒面上这类同色区，只有 P2 能给出正确轮廓，所以 P2 认下的一律保留。
+    if params.get("p2_authority", False):
+        auth = ps.p2_foreground if ps.p2_foreground is not None else p2
+        if auth.any():
+            ref = auth >= int(params.get("p2_authority_thr", 128))
+            # P2 认下、但 P1 完全没碰到的远处块不强行加：那只说明 P1 没检到它，不代表
+            # 本次要保留（它的去留由 keep/exclude 与细结构通道决定）。
+            near_p1 = imaging.dilate(p1 >= int(params.get("p1_thr", 128)),
+                                     int(params.get("p2_authority_add_px", 16)))
+            core = (core & imaging.dilate(ref, int(params.get("p2_authority_px", 4)))) \
+                | (p2 & near_p1)
 
     p3 = ps.p3
     if p3 is not None and params.get("use_p3", False):

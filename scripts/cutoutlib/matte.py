@@ -14,13 +14,20 @@ import numpy as np
 from . import imaging
 
 
-def trimap(mask: np.ndarray, erode_px: int = 2, dilate_px: int = 3) -> np.ndarray:
-    """0=确定背景, 128=未知带, 255=确定前景。"""
+def trimap(mask: np.ndarray, erode_px: int = 2, dilate_px: int = 3,
+           known_bg: np.ndarray | None = None) -> np.ndarray:
+    """0=确定背景, 128=未知带, 255=确定前景。
+
+    known_bg：已经判定为"看穿的缝隙"的内部洞。这些像素是背景，不再给 matte 留未知带——
+    否则 matte 会在洞的最内一圈拉出 0.3–0.5 的 alpha，贴深底看就是一条 1px 亮边。
+    """
     fg = imaging.erode(mask > 0, int(erode_px))
     near = imaging.dilate(mask > 0, int(dilate_px))
     tri = np.full(mask.shape, 128, np.uint8)
     tri[~near] = 0
     tri[fg] = 255
+    if known_bg is not None and known_bg.any():
+        tri[known_bg & (tri != 255)] = 0
     return tri
 
 
@@ -29,7 +36,8 @@ def _box(arr: np.ndarray, r: int) -> np.ndarray:
     return cv2.blur(arr.astype(np.float32), k, borderType=cv2.BORDER_REFLECT)
 
 
-def estimate(rgb: np.ndarray, tri: np.ndarray, params: dict | None = None) -> dict:
+def estimate(rgb: np.ndarray, tri: np.ndarray, params: dict | None = None,
+             mask: np.ndarray | None = None) -> dict:
     params = params or {}
     r = int(params.get("fb_radius", 9))
     i = rgb.astype(np.float32)
@@ -50,10 +58,17 @@ def estimate(rgb: np.ndarray, tri: np.ndarray, params: dict | None = None) -> di
 
     low_conf = denom < float(params.get("min_fb_energy", 900.0))   # |F-B| < 30
 
-    # 颜色线退化时退回几何 alpha：以距离场的平滑过渡为准
+    # 颜色线退化时退回几何 alpha：以距离场的平滑过渡为准。
+    # 过渡必须以 **mask 自己的边界** 为中心（内正外负），不能以 trimap 外沿为中心：
+    # 否则软边整体向外漂 1+geo_soft 像素，贴任何底都看得到一圈淡环（halo）。
     if low_conf.any():
-        d = imaging.boundary_distance(tri > 0).astype(np.float32)
-        geo = np.clip(0.5 + (d - 1.0) / max(2.0, float(params.get("geo_soft", 3.0))), 0.0, 1.0)
+        if mask is not None and params.get("geo_center_mask", True):
+            sd = imaging.boundary_distance(mask > 0)
+            signed = np.where(mask > 0, sd, -sd)
+        else:
+            d = imaging.boundary_distance(tri > 0)
+            signed = d - 1.0
+        geo = np.clip(0.5 + signed / max(1.0, float(params.get("geo_soft", 3.0))), 0.0, 1.0)
         alpha = np.where(low_conf, geo, alpha)
 
     alpha[tri == 255] = np.maximum(alpha[tri == 255], 1.0)
@@ -65,12 +80,14 @@ def estimate(rgb: np.ndarray, tri: np.ndarray, params: dict | None = None) -> di
     return {"alpha": alpha.astype(np.float32), "low_conf": low_conf, "F": F, "B": B}
 
 
-def refine(mask: np.ndarray, rgb: np.ndarray, params: dict | None = None) -> dict:
+def refine(mask: np.ndarray, rgb: np.ndarray, params: dict | None = None,
+           known_bg: np.ndarray | None = None) -> dict:
     params = params or {}
     if not params.get("matte_on", True):
         a = (mask > 0).astype(np.float32)
         return {"alpha": a, "low_conf": np.zeros_like(a, bool), "trimap": (mask > 0).astype(np.uint8) * 255}
-    tri = trimap(mask, int(params.get("trimap_erode", 2)), int(params.get("trimap_dilate", 3)))
-    res = estimate(rgb, tri, params)
+    tri = trimap(mask, int(params.get("trimap_erode", 2)), int(params.get("trimap_dilate", 3)),
+                 known_bg=known_bg)
+    res = estimate(rgb, tri, params, mask=mask)
     res["trimap"] = tri
     return res

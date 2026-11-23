@@ -93,6 +93,7 @@ def run_case(case, recipe: dict, cache_tag: str | None = None, write: bool = Tru
              cache_root: str | Path | None = None) -> dict:
     src = imaging.load_rgb(case.source)
     shape = src.shape[:2]
+    # 包级适配：采集产物不在仓库的 runs/cache 下，由调用方给出缓存根目录
     prop = cache.load(case.id, cache_tag, root=cache_root)
     ps = propose.build(case, prop, use_p3=bool(recipe.get("use_p3", False)), src_rgb=src)
 
@@ -117,10 +118,21 @@ def run_case(case, recipe: dict, cache_tag: str | None = None, write: bool = Tru
     bg_dist = bgmodel.distance(lab, bg_centers)
 
     hole_log = []
+    gap_kept = np.zeros(shape, bool)
     if recipe.get("hole_color_check", True):
         core, hole_log = bgmodel.fill_holes_by_color(
             core, lab, bg_dist, tol=float(recipe.get("hole_tol", bgmodel.HOLE_TOL)),
-            min_area=int(recipe.get("hole_min_area", bgmodel.HOLE_MIN_AREA)))
+            min_area=int(recipe.get("hole_min_area", bgmodel.HOLE_MIN_AREA)),
+            max_fill_px=max(1500, int(float(recipe.get("hole_max_fill_frac", 0.0)) * core.size)))
+        # 判定为"看穿的缝隙"且完全在画面内的洞：交给 matte 当已知背景。
+        # 否则 matte 会在洞的最内一圈拉出半透 alpha，贴深底看就是一条 1px 亮边。
+        gaps = imaging.fill_holes(core) & ~core
+        if gaps.any():
+            ng, lab_g, st_g, _ = imaging.label(gaps)
+            for i in range(1, ng):
+                gx, gy, gw, gh, _a = st_g[i]
+                if gx > 0 and gy > 0 and gx + gw < shape[1] and gy + gh < shape[0]:
+                    gap_kept |= lab_g == i
     elif recipe.get("fill_holes", True):
         core = imaging.fill_holes(core)
 
@@ -129,7 +141,7 @@ def run_case(case, recipe: dict, cache_tag: str | None = None, write: bool = Tru
     path = geo.path_points(rod_line, shape)
 
     # 细结构带也算"有证据"，参与 matte 的已知前景
-    mres = matte.refine(core, src, recipe)
+    mres = matte.refine(core, src, recipe, known_bg=gap_kept)
     alpha = mres["alpha"]
 
     thin_info = []
@@ -157,7 +169,8 @@ def run_case(case, recipe: dict, cache_tag: str | None = None, write: bool = Tru
             alpha, bg_dist, band_px=int(recipe.get("veto_band_px", 2)),
             tol=float(recipe.get("bg_veto_tol", bgmodel.VM_TOL)),
             min_area=int(recipe.get("veto_min_area", bgmodel.VETO_MIN_AREA)),
-            p90_tol=float(recipe.get("veto_p90_tol", bgmodel.VETO_P90_TOL)))
+            p90_tol=float(recipe.get("veto_p90_tol", bgmodel.VETO_P90_TOL)),
+            protect=(ps.p2 >= int(recipe.get("p2_thr", 128))))
 
     regions, unresolved, blocks = build_regions(case, ps, rod_line, shape)
     keep_region_blocks = [{"item": name, "bbox": list(imaging.bbox_of(region)),
@@ -198,6 +211,7 @@ def run_case(case, recipe: dict, cache_tag: str | None = None, write: bool = Tru
         "bg_model": {"k": int(recipe.get("bg_k", 12)),
                      "samples_from_layers": bg_sample["from_layers"],
                      "samples_from_border": bg_sample["from_border"],
+                     "samples_from_no_object": bg_sample.get("from_base", 0),
                      "hole_tol": float(recipe.get("hole_tol", bgmodel.HOLE_TOL)),
                      "veto_tol": float(recipe.get("bg_veto_tol", bgmodel.VM_TOL)),
                      "centers": [[round(float(v), 2) for v in c] for c in bg_centers]},
@@ -205,7 +219,8 @@ def run_case(case, recipe: dict, cache_tag: str | None = None, write: bool = Tru
         "expect_continuity": bool(case.thin) or path.size > 0,
     }
     card = score.evaluate(case, src, src, alpha, ctx, thresholds)
-    # 只记录，不参与判定：细结构覆盖率已经用于 continuity 的检查，这里补一份可读数值。
+    # 包级适配：只记录，不参与判定（细结构覆盖率已经作为 continuity 的输入用过）。
+    # 包里没有 runs/ 与报告层，selfcheck 靠这一行打印一份可读数值。
     card["metrics"]["thin_cov"] = None if thin_cov is None else round(float(thin_cov), 4)
     if unresolved:
         card["unresolved_keep"] = unresolved
