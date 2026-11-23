@@ -1,0 +1,54 @@
+{
+  "case_id": "demo-scene",
+  "recipe": "auto",
+  "acquired_at": "2026-11-23T00:00:00+00:00",
+  "canvas_size": [
+    360,
+    270
+  ],
+  "source_size": [
+    360,
+    270
+  ],
+  "note": "手写产物：三个提案文件由 scripts/make_demo.py 用 numpy/OpenCV 直接画出，不经过任何采集服务，也不是回放件。",
+  "bria": "bria.png",
+  "key": "key.png",
+  "layers": [
+    {
+      "z": 0,
+      "name": "background",
+      "label": "背景",
+      "bbox": [
+        0,
+        0,
+        360,
+        270
+      ],
+      "file": "layers/z0_background.png"
+    },
+    {
+      "z": 1,
+      "name": "character",
+      "label": "角色：橙色小人（含手中细线）",
+      "bbox": [
+        73,
+        72,
+        301,
+        207
+      ],
+      "file": "layers/z1_character.png"
+    },
+    {
+      "z": 2,
+      "name": "splash",
+      "label": "水花",
+      "bbox": [
+        279,
+        184,
+        328,
+        226
+      ],
+      "file": "layers/z2_splash.png"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "demo-scene",
+  "source": "source.png",
+  "keep": [
+    "角色",
+    "细线"
+  ],
+  "exclude": [
+    "水花"
+  ],
+  "thin": [
+    "细线"
+  ],
+  "expect_shadow": false,
+  "notes": {
+    "why": "离线自检样本：1px 白线（长宽比 >12、局部宽度 <3px）必须靠几何重建，水花必须被排除，像素必须全部来自原图"
+  }
+}
