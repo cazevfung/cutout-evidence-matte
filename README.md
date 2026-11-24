@@ -78,13 +78,25 @@ layers/*.png     # P2 图层（RGBA，每层一张，label 写清是什么）
 3. 校验并运行：
 
 ```bash
-python scripts/cutout_run.py check-cache --case <case-dir> --cache-dir <cache-root>
+python scripts/cutout_run.py check-cache --case <case-dir> --cache-dir <cache-root> --strict
 python scripts/cutout_run.py run --case <case-dir> --cache-dir <cache-root> --out out
 ```
 
 产出 `out/<case>.rgba.png`、`.mask.png`、`.scorecard.json`、`.recipe.json`、`.proof.png`。
 `status=uncertain` 时看 `failures` 与 `blocked_layer`，按 `docs/thresholds.md` 的归因表动那一层。
 上面第二张图就是用这条命令跑出来的一份真产物（贴底合成后裁到角色）。
+
+## 为什么效果取决于三路产物
+
+决策层不会替你猜范围。它只拿 P1（显著性去背景）、P2（图层拆分）、P3（绿幕编辑）三路证据做
+融合：P1 只说「最显眼的是这块」，P2 说「这块归谁、这块不是主体」，P3 只在主体整体缺失时补位。
+要保留什么、要排除什么、边界在哪，几乎全由 P2 回答；换一个弱的分层工具，文件契约一样能过，
+抠出来的范围却会明显变差。所以三路不是可以随便替换的：先跑 `check-cache --strict`，P2 不够用时
+它不会静默放过，而是退出码非 0 并点名 P2。
+
+```bash
+python scripts/cutout_run.py check-cache --case demo --cache-dir demo/cache --strict
+```
 
 ## 目录
 
@@ -112,6 +124,7 @@ python scripts/cutout_run.py run --case <case-dir> --cache-dir <cache-root> --ou
 | --- | --- | --- |
 | `缺 P1 / P2 / P3` | 缓存少某一路 | 按提示补 `bria.png` / `layers/*.png` / `key.png`，并检查 `meta.json` 对应字段 |
 | `P2 图层 bbox 无效` | bbox 不是原图坐标或为空 | 改成 `[x0,y0,x1,y1]`（原图坐标） |
+| `strict FAIL -> weak leg: P2` | 文件齐全，但 P2 层数 / label / keep 覆盖率至少两条不过 | 按 SKILL.md「怎么产出三路候选」重做 P2，不要改阈值绕过 |
 | `unresolved_keep` | keep 项在原图定位不到 | 图里没有就改 keep；有但漏了按归因补提案 |
 | `status=uncertain` | 某条判据未过 | 看 `failures` / `blocked_layer`，按归因表改那一层，不要调阈值 |
 | 边缘糊、主体被重绘 | 把生成图当成了结果 | 最终像素必须来自原图，模型只给候选 mask |

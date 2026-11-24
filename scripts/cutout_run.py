@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the decision layer on a case directory.
 
-    python scripts/cutout_run.py check-cache --case <case-dir> --cache-dir <cache>
+    python scripts/cutout_run.py check-cache --case <case-dir> --cache-dir <cache> [--strict]
     python scripts/cutout_run.py run         --case <case-dir> --cache-dir <cache> --out out
 
 A case directory contains ``case.json`` and the source image. The capture cache
@@ -9,8 +9,13 @@ holds the three proposal products (P1/P2/P3) as described in SKILL.md. Both are
 plain directories, so the same command works with a folder a human assembled by
 hand and with one written by an automated capture step.
 
-Exit codes: 0 = pass, 1 = uncertain (see scorecard.json), 2 = bad input or a
-missing capture product.
+``--strict`` adds a quality gate on top of the file contract: it also judges
+whether P2 actually covers the keep evidence (layer count / label semantics /
+keep-region coverage, at least two of three). Without ``--strict`` the command
+behaves exactly as before.
+
+Exit codes: 0 = pass, 1 = uncertain (see scorecard.json), 2 = bad input, a
+missing capture product, or a failed ``--strict`` quality gate.
 """
 
 from __future__ import annotations
@@ -56,6 +61,21 @@ def cmd_check_cache(args) -> int:
     if bad:
         print("cache: bbox must be in source-image coordinates; out of frame: " + ", ".join(bad))
         return 2
+    if args.strict:
+        from cutoutlib import cachequality
+
+        quality = cachequality.evaluate(prop)
+        print("strict: P2 quality gate (need 2 of 3: layer count / label semantics / keep coverage)")
+        for item in quality["checks"]:
+            state = "ok" if item["passed"] else "WEAK"
+            print(f"  P2 {item['name']:<15} {state:<5} {item['detail']}")
+        if not quality["passed"]:
+            print(f"cache: strict FAIL -> weak leg: {quality['weak_leg']} "
+                  f"({', '.join(quality['failed'])})")
+            print("  a P2 that only says 'everything is the subject' or misses a rod / prop "
+                  "still satisfies the file contract; fix P2 before running the decision layer")
+            return 2
+        print("cache: strict ok (P2 covers the keep evidence)")
     print("cache: ok (P1 + P2 + P3 all present)")
     return 0
 
@@ -93,6 +113,8 @@ def main() -> int:
     p.add_argument("--case", required=True)
     p.add_argument("--cache-dir", required=True)
     p.add_argument("--tag", default=None)
+    p.add_argument("--strict", action="store_true",
+                   help="also judge whether P2 covers the keep evidence (fails with a named leg)")
     p.set_defaults(func=cmd_check_cache)
 
     p = sub.add_parser("run", help="run the decision layer and write deliverables")
